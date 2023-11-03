@@ -8,7 +8,6 @@ build:
     - "scipy==1.9.3"
     - "transformers==4.25.1"
     - "accelerate==0.20.3"
-    - "qrcode==7.4.2"
     - "xformers==0.0.21"
 
 predict: "predict.py:Predictor"

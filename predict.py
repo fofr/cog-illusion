@@ -2,7 +2,6 @@ from typing import List
 
 from PIL.Image import LANCZOS
 from PIL import Image
-import qrcode
 import torch
 from cog import BasePredictor, Input, Path
 from diffusers import StableDiffusionControlNetPipeline, EulerDiscreteScheduler
@@ -35,27 +34,11 @@ class Predictor(BasePredictor):
         )
         self.pipe.enable_xformers_memory_efficient_attention()
 
-    def generate_qrcode(self, qr_code_content, background, border, width, height):
-        print("Generating QR Code from content")
-        qr = qrcode.QRCode(
-            version=1,
-            error_correction=qrcode.constants.ERROR_CORRECT_H,
-            box_size=10,
-            border=border,
-        )
-        qr.add_data(qr_code_content)
-        qr.make(fit=True)
-
-        qrcode_image = qr.make_image(fill_color="black", back_color=background)
-        qrcode_image = resize_for_condition_image(qrcode_image, width, height)
-        return qrcode_image
-
     # Define the arguments and types the model takes as input
     def predict(
         self,
-        prompt: str = Input(description="The prompt to guide QR Code generation."),
-        qr_code_content: str = Input(
-            description="The website/content your QR Code will point to."
+        prompt: str = Input(
+            default="a painting of a 19th century town"
         ),
         negative_prompt: str = Input(
             description="The negative prompt to guide image generation.",
@@ -71,35 +54,25 @@ class Predictor(BasePredictor):
             le=30.0,
         ),
         seed: int = Input(description="Seed", default=-1),
-        width: int = Input(description="Width out the output image", default=768),
-        height: int = Input(description="Height out the output image", default=768),
+        width: int = Input(default=768),
+        height: int = Input(default=768),
         num_outputs: int = Input(
             description="Number of outputs", ge=1, le=4, default=1
         ),
         image: Path = Input(
-            description="Input image. If none is provided, a QR code will be generated",
+            description="Input image",
             default=None,
         ),
         controlnet_conditioning_scale: float = Input(
-            description="The outputs of the controlnet are multiplied by `controlnet_conditioning_scale` before they are added to the residual in the original unet.",
+            description="How strong the controlnet conditioning is",
             ge=0.0,
             le=4.0,
             default=2.2,
         ),
-        border: int = Input(description="QR code border size", ge=0, le=4, default=1),
-        qrcode_background: str = Input(
-            description="Background color of raw QR code",
-            choices=["gray", "white"],
-            default="gray",
-        ),
     ) -> List[Path]:
         seed = torch.randint(0, 2**32, (1,)).item() if seed == -1 else seed
         if image is None:
-            if qrcode_background == "gray":
-                qrcode_background = "#808080"
-            image = self.generate_qrcode(
-                qr_code_content, background=qrcode_background, border=border, width=width, height=height,
-            )
+            raise ValueError("Give an image for prediction")
         else:
             image = Image.open(str(image))
         out = self.pipe(
