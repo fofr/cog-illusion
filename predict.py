@@ -51,6 +51,38 @@ class Predictor(BasePredictor):
         self.controlnet_img2img_pipe.enable_xformers_memory_efficient_attention()
         self.controlnet_inpainting_pipe.enable_xformers_memory_efficient_attention()
 
+    def resize_image(self, image):
+        original_width, original_height = image.size
+        print(f"Original dimensions: Width: {original_width}, Height: {original_height}")
+        resized_width, resized_height = self.resize_to_allowed_dimensions(original_width, original_height)
+        print(f"Resized dimensions: Width: {resized_width}, Height: {resized_height}")
+        resized_image = image.resize((resized_width, resized_height))
+        return resized_image, resized_width, resized_height
+
+    def get_allowed_dimensions(self, base=512, max_dim=1024):
+        """
+        Function to generate allowed dimensions optimized around a base up to a max
+        """
+        allowed_dimensions = []
+        for i in range(base, max_dim + 1, 64):
+            for j in range(base, max_dim + 1, 64):
+                allowed_dimensions.append((i, j))
+        return allowed_dimensions
+
+    def resize_to_allowed_dimensions(self, width, height):
+        """
+        Function adapted from Lucataco's implementation of SDXL-Controlnet for Replicate
+        """
+        allowed_dimensions = self.get_allowed_dimensions()
+        # Calculate the aspect ratio
+        aspect_ratio = width / height
+        print(f"Aspect Ratio: {aspect_ratio:.2f}")
+        # Find the closest allowed dimensions that maintain the aspect ratio
+        closest_dimensions = min(
+            allowed_dimensions, key=lambda dim: abs(dim[0] / dim[1] - aspect_ratio)
+        )
+        return closest_dimensions
+
     # Define the arguments and types the model takes as input
     def predict(
         self,
@@ -109,8 +141,6 @@ class Predictor(BasePredictor):
         common_args = dict(
             prompt=[prompt] * num_outputs,
             negative_prompt=[negative_prompt] * num_outputs,
-            width=width,
-            height=height,
             guidance_scale=guidance_scale,
             controlnet_conditioning_scale=controlnet_conditioning_scale,
             generator=torch.Generator().manual_seed(seed),
@@ -119,35 +149,47 @@ class Predictor(BasePredictor):
 
         pipe = self.controlnet_txt2img_pipe
         if mask_image is not None:
+            print("Inpainting mode")
             mask_image = Image.open(str(mask_image))
             image = Image.open(str(image))
 
+            image, new_width, new_height = self.resize_image(image)
+            mask_image = mask_image.resize((new_width, new_height))
+            control_image = control_image.resize((new_width, new_height))
+
             mode_args = dict(
+                width=new_width,
+                height=new_height,
                 mask_image=[mask_image] * num_outputs,
                 image=[image] * num_outputs,
                 control_image=[control_image] * num_outputs,
                 strength=prompt_strength,
             )
 
-            print("Inpainting mode")
             pipe = self.controlnet_inpainting_pipe
         elif image is not None:
+            print("img2img mode")
             image = Image.open(str(image))
+            image, new_width, new_height = self.resize_image(image)
+            control_image = control_image.resize((new_width, new_height))
 
             mode_args = dict(
+                width=new_width,
+                height=new_height,
                 image=[image] * num_outputs,
                 control_image=[control_image] * num_outputs,
                 strength=prompt_strength,
             )
 
-            print("img2img mode")
             pipe = self.controlnet_img2img_pipe
         else:
+            print("txt2img mode")
+            control_image = control_image.resize((width, height))
             mode_args = dict(
+                width=width,
+                height=height,
                 image=[control_image] * num_outputs,
             )
-
-            print("txt2img mode")
 
         out = pipe(**common_args, **mode_args)
 
