@@ -136,7 +136,7 @@ class Predictor(BasePredictor):
             ge=0.1,
             le=30.0,
         ),
-        seed: int = Input(description="Seed", default=-1),
+        seed: int = Input(default=None),
         width: int = Input(default=768),
         height: int = Input(default=768),
         sizing_strategy: str = Input(
@@ -171,8 +171,21 @@ class Predictor(BasePredictor):
             le=4.0,
             default=0.75,
         ),
+        controlnet_start: float = Input(
+            description="When controlnet conditioning starts",
+            ge=0.0,
+            le=1.0,
+            default=0.0,
+        ),
+        controlnet_end: float = Input(
+            description="When controlnet conditioning ends",
+            ge=0.0,
+            le=1.0,
+            default=1.0,
+        ),
     ) -> List[Path]:
-        seed = torch.randint(0, 2**32, (1,)).item() if seed == -1 else seed
+        seed = torch.randint(0, 2**32, (1,)).item() if seed is None or seed == -1 else seed
+        print(f"Using seed: {seed}")
         if control_image is None:
             raise ValueError("Give an image for prediction")
 
@@ -184,6 +197,8 @@ class Predictor(BasePredictor):
             controlnet_conditioning_scale=controlnet_conditioning_scale,
             generator=torch.Generator().manual_seed(seed),
             num_inference_steps=num_inference_steps,
+            control_guidance_start=controlnet_start,
+            control_guidance_end=controlnet_end,
         )
 
         pipe = self.controlnet_txt2img_pipe
