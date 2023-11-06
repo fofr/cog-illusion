@@ -51,13 +51,18 @@ class Predictor(BasePredictor):
         self.controlnet_img2img_pipe.enable_xformers_memory_efficient_attention()
         self.controlnet_inpainting_pipe.enable_xformers_memory_efficient_attention()
 
-    def resize_image(self, image):
+    def get_dimensions(self, image):
         original_width, original_height = image.size
-        print(f"Original dimensions: Width: {original_width}, Height: {original_height}")
-        resized_width, resized_height = self.resize_to_allowed_dimensions(original_width, original_height)
-        print(f"Resized dimensions: Width: {resized_width}, Height: {resized_height}")
-        resized_image = image.resize((resized_width, resized_height))
-        return resized_image, resized_width, resized_height
+        print(
+            f"Original dimensions: Width: {original_width}, Height: {original_height}"
+        )
+        resized_width, resized_height = self.get_resized_dimensions(
+            original_width, original_height
+        )
+        print(
+            f"Dimensions to resize to: Width: {resized_width}, Height: {resized_height}"
+        )
+        return resized_width, resized_height
 
     def get_allowed_dimensions(self, base=512, max_dim=1024):
         """
@@ -69,19 +74,50 @@ class Predictor(BasePredictor):
                 allowed_dimensions.append((i, j))
         return allowed_dimensions
 
-    def resize_to_allowed_dimensions(self, width, height):
+    def get_resized_dimensions(self, width, height):
         """
         Function adapted from Lucataco's implementation of SDXL-Controlnet for Replicate
         """
         allowed_dimensions = self.get_allowed_dimensions()
-        # Calculate the aspect ratio
         aspect_ratio = width / height
         print(f"Aspect Ratio: {aspect_ratio:.2f}")
         # Find the closest allowed dimensions that maintain the aspect ratio
+        # and are closest to the optimum dimension of 768
+        optimum_dimension = 768
         closest_dimensions = min(
-            allowed_dimensions, key=lambda dim: abs(dim[0] / dim[1] - aspect_ratio)
+            allowed_dimensions,
+            key=lambda dim: abs(dim[0] / dim[1] - aspect_ratio) + abs(dim[0] - optimum_dimension)
         )
         return closest_dimensions
+
+    def resize_images(self, images, width, height):
+        return [
+            img.resize((width, height)) if img is not None else None for img in images
+        ]
+
+    def open_image(self, image_path):
+        return Image.open(str(image_path)) if image_path is not None else None
+
+    def apply_sizing_strategy(
+        self, sizing_strategy, width, height, control_image, image=None, mask_image=None
+    ):
+        image = self.open_image(image)
+        mask_image = self.open_image(mask_image)
+        control_image = self.open_image(control_image)
+
+        if sizing_strategy == "input_image":
+            print("Resizing based on input image")
+            width, height = self.get_dimensions(image)
+        elif sizing_strategy == "control_image":
+            print("Resizing based on control image")
+            width, height = self.get_dimensions(control_image)
+        else:
+            print("Using given dimensions")
+
+        image, mask_image, control_image = self.resize_images(
+            [image, mask_image, control_image], width, height
+        )
+        return width, height, control_image, image, mask_image
 
     # Define the arguments and types the model takes as input
     def predict(
@@ -103,6 +139,11 @@ class Predictor(BasePredictor):
         seed: int = Input(description="Seed", default=-1),
         width: int = Input(default=768),
         height: int = Input(default=768),
+        sizing_strategy: str = Input(
+            description="Decide how to resize images – use width/height, resize based on input image or control image",
+            choices=["width/height", "input_image", "control_image"],
+            default="width/height",
+        ),
         num_outputs: int = Input(
             description="Number of outputs", ge=1, le=4, default=1
         ),
@@ -128,14 +169,12 @@ class Predictor(BasePredictor):
             description="How strong the controlnet conditioning is",
             ge=0.0,
             le=4.0,
-            default=2.2,
+            default=0.75,
         ),
     ) -> List[Path]:
         seed = torch.randint(0, 2**32, (1,)).item() if seed == -1 else seed
         if control_image is None:
             raise ValueError("Give an image for prediction")
-        else:
-            control_image = Image.open(str(control_image))
 
         # Common arguments
         common_args = dict(
@@ -150,18 +189,21 @@ class Predictor(BasePredictor):
         pipe = self.controlnet_txt2img_pipe
         if mask_image is not None:
             print("Inpainting mode")
-            mask_image = Image.open(str(mask_image))
-            image = Image.open(str(image))
-
-            image, new_width, new_height = self.resize_image(image)
-            mask_image = mask_image.resize((new_width, new_height))
-            control_image = control_image.resize((new_width, new_height))
+            (
+                width,
+                height,
+                control_image,
+                image,
+                mask_image,
+            ) = self.apply_sizing_strategy(
+                sizing_strategy, width, height, control_image, image, mask_image
+            )
 
             mode_args = dict(
-                width=new_width,
-                height=new_height,
+                width=width,
+                height=height,
                 mask_image=[mask_image] * num_outputs,
-                image=[image] * num_outputs,
+                image=[image] * num_outputs if image is not None else None,
                 control_image=[control_image] * num_outputs,
                 strength=prompt_strength,
             )
@@ -169,13 +211,13 @@ class Predictor(BasePredictor):
             pipe = self.controlnet_inpainting_pipe
         elif image is not None:
             print("img2img mode")
-            image = Image.open(str(image))
-            image, new_width, new_height = self.resize_image(image)
-            control_image = control_image.resize((new_width, new_height))
+            width, height, control_image, image, _ = self.apply_sizing_strategy(
+                sizing_strategy, width, height, control_image, image
+            )
 
             mode_args = dict(
-                width=new_width,
-                height=new_height,
+                width=width,
+                height=height,
                 image=[image] * num_outputs,
                 control_image=[control_image] * num_outputs,
                 strength=prompt_strength,
@@ -184,7 +226,10 @@ class Predictor(BasePredictor):
             pipe = self.controlnet_img2img_pipe
         else:
             print("txt2img mode")
-            control_image = control_image.resize((width, height))
+            width, height, control_image, _, _ = self.apply_sizing_strategy(
+                sizing_strategy, width, height, control_image
+            )
+
             mode_args = dict(
                 width=width,
                 height=height,
